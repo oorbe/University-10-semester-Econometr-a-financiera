@@ -1,0 +1,444 @@
+---
+title: "Trabajo 1"
+author: "Oliver Rodriguez"
+date: "5/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Capitulo 2. (5) Conceptos básicos: modelos ejemplos con R
+https://drive.google.com/file/d/123gPzlq2A2WR0I5MB5MMlAmiINc0DXfq/view
+
+Capitulo 2. (6) Conceptos básicos: modelos SV, MA(q)
+https://drive.google.com/file/d/1kqt4wwtQ2ql11NxpG00t4DkiIDzMBhDM/view
+
+
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+
+```{r}
+datos <- read.table("acciones.fiducias.2000.2009.dat", header = TRUE, stringsAsFactors=FALSE)
+datos_TIB <- read.table("TIB.dat", header = T, stringsAsFactors = F)
+# is.na(datos) %>% colSums()
+# 
+# fiduco_na <- which(is.na(diff(log(datos$fiducol),1,1)))
+# datos$fiducol[fiduco_na]
+```
+
+
+
+```{r}
+#Precios de acciones bancos bogot´a y bancolombia, y fiduciarias occidente y fiducolombia.
+# names(datos)
+datos_con_occi <- datos %>% select(bogota, bancol) %>% 
+  apply( 2, function(x) {diff(log(x),1,1)
+            }
+    ) %>% as.tibble() %>%
+  mutate(fiducol = (1+datos$fiducol[-1])^(1/360)-1, occi = (1+datos$occi[-1])^(1/360)-1, 
+         fecha = lubridate::dmy(datos$fechas[-1])) %>% 
+  relocate(fecha)
+
+# is.na(datos_con_occi) %>% colSums()
+
+datos_con_occi[,-1] %>% colMeans() %>% data.frame() %>%  xtable::xtable(digits = 6)
+datos_con_occi %>% summary
+
+datos_sin_occi <- datos_con_occi %>% select(-occi)
+```
+
+# NOTA: reportar las series de nivel si queda tiempo.
+1. (25/25) Conforme dos portafolios con las acciones de cada grupo. En el grupo No
+1, con y sin Bitcoin. En el grupo No2 con y sin fiduciaria Occidente. 
+
+Reporte los porcentajes de los portafolios ´optimos, y las gr´aficas de los rendimientos.
+
+```{r}
+# Rendimientos diarios promedios:
+datos_con_occi[,-1] %>% colMeans()
+
+s <- cov(datos_con_occi[,-c(1)])
+library(tseries)
+
+# Portafolio para proporciones de inversion eficiente "portfolio.optim":
+# pm debe ser seleccionado como un valor por encima del el míimo de los promedios de valores de las acciones.
+Portafolio1 <- portfolio.optim(x = as.matrix(datos_con_occi[,-c(1)]), pm = 0.0009, covmat = s)
+Portafolio1$pw
+
+# Rendimientos diarios promedios:
+datos_sin_occi[,-1] %>% colMeans()
+
+s2 <- cov(datos_sin_occi[,-c(1)])
+Portafolio2 <- portfolio.optim(x = as.matrix(datos_sin_occi[,-c(1)]), pm = 0.001, covmat = s2)
+(Portafolio2$pw)
+
+xx <- data.frame(BancoBogota = c(Portafolio1$pw[1], Portafolio2$pw[1]),
+                 Bancolombia = c(Portafolio1$pw[2], Portafolio2$pw[2]),
+                 Fiducol = c(Portafolio1$pw[3], Portafolio2$pw[3]),
+                 FiduOccidente = c(Portafolio1$pw[4],        NA)
+                 , row.names = c("Portafolio 1", "Portafolio 2")
+                 )
+
+xtable::xtable(xx, digits = 3)
+```
+
+```{r}
+nombres <- c("Banco de Bogota",  "Bancolombia",  "Fiducol", "Fiduciaria occidente")
+l <- list()
+j <- 1
+for (i in names(datos_con_occi[-1])) {
+  Dat <- datos_con_occi[,c("fecha", i)]
+  names(Dat) <- c("fecha", "X")
+  l <- append(l, list(
+  ggplot(data = Dat, mapping = aes(x = fecha, y = X))+
+  geom_line()+
+      ggtitle(paste0("Accion de ", nombres[j]))+
+      xlab("Fecha") +
+      ylab("Porcentaje")+
+    theme_minimal()+
+    geom_hline(yintercept=0, linetype="dashed", color = "red")
+  
+  ))
+  j = j+1
+}
+
+g <- gridExtra::grid.arrange(l[[1]], l[[2]], l[[3]], l[[4]], ncol=2)
+rm(i,j,nombres, s,s2)
+ggsave(filename = "Rendimientos.pdf", plot = g)
+
+#NOTA: Si queda tiempo añadir estas gráficas. y haceer pruebas de KwiatkowskiPhillipsSchmidtShin pag 11 notas
+acf(datos_con_occi$bogota)
+acf(datos_con_occi$bancol )
+acf(datos_con_occi$fiducol)
+acf(datos_con_occi$occi)
+
+```
+
+
+2. (25/25) Ajuste el modelo asignado a los rendimientos de los dos portafolios. Reporte
+los coeficientes ajustados, valores p. Reporte las pruebas LjungBox para los residuos de cada modelo.
+
+NOTA: PULIR CON PRUEBAS DE HIPO. EN TANTO SEA POSIBLE(TIEMPO). FinTS, sobre la funci ´on arch.test: “The ARCH Engle’s pag19
+```{r}
+# Rendimiento del portafoleo (Suma de los rendimientos ponderada por los pesos de optimizacion del portafoleo ):
+RendPortafolio1 <- as.matrix(datos_con_occi[,-1]) %*%  Portafolio1$pw
+RendPortafolio2 <- as.matrix(datos_sin_occi[,-1]) %*%  Portafolio2$pw
+
+# NOTA: grafico_lineas()
+ts.plot(RendPortafolio1)
+ts.plot(RendPortafolio2)
+
+#---------------------caso:AR(1)+ARCH(1).
+require(rugarch)
+
+#------------especificar el modelo
+mod.spec = ugarchspec(
+variance.model = list(garchOrder=c(1,0)), 
+mean.model = list(armaOrder=c(1,0)),
+distribution.model = "std")
+
+#------------estimar el modelo
+mod1 = ugarchfit(spec=mod.spec, 
+data=RendPortafolio1,solver.control=list(trace = 1)) 
+(mod1)
+
+(coef1 = mod1@fit$coef)
+
+# ljun box pag 17
+Zn <- mod1@fit$residuals
+Box.test(Zn, lag = 30 , type =  "Ljung-Box")
+Box.test(Zn, lag = 60 , type =  "Ljung-Box")
+Box.test(Zn, lag = 90 , type =  "Ljung-Box")
+
+
+mod2 <- ugarchfit(spec=mod.spec, 
+data=RendPortafolio2,solver.control=list(trace = 100)) 
+
+Zn2 <-mod2@fit$residuals
+Box.test(Zn2, lag = 30 , type =  "Ljung-Box")
+Box.test(Zn2, lag = 60 , type =  "Ljung-Box")
+Box.test(Zn2, lag = 90 , type =  "Ljung-Box")
+```
+
+
+
+```{r}
+# library(rugarch)
+# Considerar esta opcion para dar solución.
+# ar1.garch = garchFit(formula = ~ arma(1,0) + garch(1, 0), 
+# data = RendPortafolio2,cond.dist = "std") 
+
+# NOTA: agregar los valores ajustados sobre las series del rendimiento del portafolio
+par(mfrow=c(1,1))
+t = seq(1,length(RendPortafolio1))
+plot(t,RendPortafolio1,type='l',col='darkgray')
+lines(t,mod1@fit$fitted.values,col='blue')
+
+par(mfrow=c(1,1))
+plot(t,RendPortafolio2,type='l',col='darkgray')
+lines(t,mod2@fit$fitted.values,col='blue')
+
+rm(Zn,Zn2)
+```
+
+3. (25/25) Estime la distribuci ´on del valor presente de un flujo de pagos con los
+modelos para los rendimientos de ambos portafolios. Reporte el valor medio del
+valor presente y las gr´aficas de las densidades. Use como gu´ıa el ejemplo en clase
+ejemplo.portafolio.valorpresente.r, que est´a en la carpeta deMoodle:
+Ejercicios para trabajo 1.
+```{r}
+
+# NOTA: todo el código que esta comentado se utilizó para la simulación, luego los objetos fueron guardados y posteriormente cargados para su uso, por esta razon ya no se utilizarán más estas lineas a menos que ud quiera comprobar todo el procedimiento. PERO SE DEMORA UN POCO YA QUE SON 100000 SIMULACIONES.
+
+# Esto se llama una renta estructuradas
+#---------------------------------------------
+# Valor presente anualidad a 5 a?os, 12 pagos mes vencido
+# tasa efectiva diaria AR(1): 1+id(k) = exp(X_k)
+# tasa incremento anual 2%, 
+# valor primer a?o 1 mill
+
+#------------dise?ar los pagos mensuales cada 30 dias
+# C1 = 1             # La primera pago
+# id = 1.02^(1/12)-1 # De la formula
+# m=360;n=5;r=30;    # m = dias, n = años y r = numero de dias por mes (por convencion 30)
+# k = seq(1,n*m,1)   # k = subindice del id de los 5 años.
+# ck = ifelse(k%%r == 0, 1, 0) # k%%r = reciduo de la div entera. Para activar los pagos al final de cada mes, es el indicador de los meses.
+# ck = C1*ck*(1+id)^floor((k-1)/m) # Se hacen el calculo de los PAGOS pactados únicamente en los finales de mes
+# 
+# #--------------parametros
+# N = 100000 # Número de iteraciones bucle.
+# Vgarch = double(N)
+# nm = n*m # número de simulaciones = años * dias. Para fun ugarchsim.
+
+#---------simulacion con  AR(1)+GARCH(1,0)+tS.
+# esto nos da el capital que necesitamos para invertir en el portafolio.
+# Lo comento porque es uy demorado, pero guarde el objero en formato R y  poteriormente lo cargué.
+# for(j in 1:N){
+# A = ugarchsim(mod1,n.sim=nm)
+# Xn = A@simulation$seriesSim
+# Vgarch[j] = sum(ck/cumprod(exp(Xn)))
+# }
+# beepr::beep(sound = 8)
+
+# 
+# saveRDS(Vgarch, "Vgarch.rds")
+Vgarch <- readRDS(file = "Vgarch.rds")
+ts.plot(Vgarch) # Hay algunos valores exagerados
+
+
+summary(Vgarch)
+mean(Vgarch)
+median(Vgarch)
+
+length(which(Vgarch <=400))/100000
+plot(density(Vgarch[which(Vgarch <=400)]),col='darkgray',
+  lwd=2, xlim =c(0, 400))
+  points(median(Vgarch),0,pch=20,col='red')
+
+
+
+# Vgarch2 <- double(N)
+# for(j in 1:N){
+# A = ugarchsim(mod2,n.sim=nm)
+# Xn = A@simulation$seriesSim
+# Vgarch2[j] = sum(ck/cumprod(exp(Xn)))
+# }
+# beepr::beep(sound = 2)
+# saveRDS(Vgarch2, "Vgarch2.rds")
+Vgarch2 <- readRDS(file = "Vgarch2.rds")
+ts.plot(Vgarch2) # Hay algunos valores exagerados
+
+
+summary(Vgarch2)
+mean(Vgarch2)
+median(Vgarch2)
+length(which(Vgarch2 <=400))/100000
+hist(Vgarch2[which(Vgarch2 <=400)], freq = T)
+plot(density(Vgarch2[which(Vgarch2 <=1000)]),col='darkgray',
+  lwd=2, xlim =c(0, 1000))
+  points(median(Vgarch2),0,pch=20,col='red')
+```
+
+
+```{r}
+# Estos son los histogramas que se utilizarán para el trabajo.
+
+# histo1 <- ggplot(data=data.frame(Vgarch = Vgarch[Vgarch<=400]), aes(x = Vgarch)) + 
+#   geom_histogram(aes(y =..density..), 
+#                  breaks=seq(0, 450, by = 10), 
+#                  col="black", 
+#                  fill="red", 
+#                  alpha=.2) + 
+#   geom_density(col="black", size=0.8) +
+#   geom_point(aes(x=37.84995, y=0), colour="red")+ 
+#   labs(title="Histograma portafolio 1", x="Inversion", y="Densidad")+
+#   theme_minimal()
+# ggsave(filename = "histo1.pdf", plot = histo1)
+# 
+# histo2 <- ggplot(data=data.frame(Vgarch = Vgarch2[Vgarch2<=400]), aes(x = Vgarch)) +
+#   geom_histogram(aes(y =..density..),
+#                  breaks=seq(0, 450, by = 10),
+#                  col="black",
+#                  fill="red",
+#                  alpha=.2) +
+#   geom_density(col="black", size=0.8) +
+#   geom_point(aes(x= 36.55718, y=0), colour="red")+
+#   labs(title="Histograma portafolio 2", x="Inversion", y="Densidad")+
+#   theme_minimal()
+# ggsave(filename = "histo2.pdf", plot = histo2)
+
+
+```
+
+
+4. (25/25) Estime las volatilidades de los rendimientos de los dos portafolios. Reporte
+las gr´aficas. Igualmente, reporte las gr´aficas de la raz´on de Sharpe
+
+SRn = Xn − In/sigma_n (2.54)
+
+donde Xn es el rendimiento, In es un ´ındice de referencia para rendimientos. Para
+el grupo No 1 es la tasa TES a 1 a˜nos, convertida a efectiva diaria. Y para el grupo
+No 2 es la tasa TIB, que hay que convertir a efectiva diaria.
+Compare el ´ındice Sharpe de los dos portafolios. Un mayor valor de este ´ındice
+indica una mejor relaci ´on entre rendimiento y volatilidad.
+```{r}
+require(fGarch)
+mod1.1 <-  garchFit(~ arma(1,0)+garch(1,0),
+                    data = RendPortafolio1, trace = FALSE, 
+                    cond.dist = "std")
+
+sigma1 <-  volatility(mod1.1, type = "sigma")
+
+
+# con esto realizamos agregados para una seuma en una ventana de n=24 valores(suma acumulada), de las volatilidades, rendimientos y los rendimientos de TIB que es el nivel de referencia.
+require(data.table)
+
+sigma1.a <- frollsum(x=sigma1, 
+                     n=24, 
+                     fill=NA, 
+                     algo="exact", 
+                     align="left", 
+                     na.rm=FALSE, 
+                     hasNA=NA, 
+                     adaptive=FALSE)
+
+
+X1.a = frollsum(x=RendPortafolio1, 
+                n=24, 
+                fill=NA, 
+                algo="exact", 
+                align="left", 
+                na.rm=FALSE, 
+                hasNA=NA, 
+                adaptive=FALSE)
+
+# Conviento la tasa TIB de efectiva a nual a efectiva diaria:
+datos_TIB %<>% mutate(TIB = (1+TIB)^(1/360)-1)
+
+R.a = frollsum(x=datos_TIB[,2], 
+               n=24, 
+               fill=NA, 
+               algo="exact", 
+               align="left", 
+               na.rm=FALSE, 
+               hasNA=NA, 
+               adaptive=FALSE)
+
+# Aquí realizo hago conincidir las fechas de TIB con las disponibles en los datos de acciones, con un left join.
+R.a.join <- datos_TIB %>% mutate(R.a = R.a, fecha =  lubridate::dmy(Fecha)) %>% select(fecha, R.a)#cambienombre y formato de Fecha
+R.a.join <- left_join(datos_con_occi[,1], R.a.join, by = "fecha") 
+
+mod2.1 <-  garchFit(~ arma(1,0)+garch(1,0),
+                    data = RendPortafolio2, trace = FALSE, cond.dist = "std")
+
+sigma2 <-  volatility(mod2.1, type = "sigma")
+
+
+sigma2.a = frollsum(x=sigma2, 
+                    n=24, 
+                    fill=NA, 
+                    algo="exact", 
+                    align="left", 
+                    na.rm=FALSE, 
+                    hasNA=NA, 
+                    adaptive=FALSE)
+
+
+X2.a = frollsum(x=RendPortafolio2, 
+                n=24, 
+                fill=NA, 
+                algo="exact", 
+                align="left", 
+                na.rm=FALSE, 
+                hasNA=NA, 
+                adaptive=FALSE)
+
+#Graficas de las volatilidades:
+ts.plot(sigma1)
+ts.plot(sigma2)
+
+grafico_lineas <- function(Data, x='Sts', y='Sts', Title='NN', Yl = "", Xl="Fecha",  color = "darkred") {
+  Dat <- Data[,c(x, y)]
+  names(Dat) <- c("fecha", "X")
+  ggplot(data = Dat, mapping = aes(x = fecha, y = X))+
+  geom_line(color = color)+
+      ggtitle(paste0(Title))+
+      xlab(Xl) +
+      ylab(Yl)+
+    theme_minimal()
+}
+
+p <- gridExtra::grid.arrange(
+  grafico_lineas(Data = data.frame(sigma1, fecha = datos_con_occi$fecha)
+                                       ,x = "fecha", y ="sigma1",Title = "Volatilidad portafolio 1", Yl ="Valores"),
+  grafico_lineas(Data = data.frame(sigma2, fecha = datos_con_occi$fecha)
+                                       , x = "fecha", y ="sigma2",Title = "Volatilidad portafolio 2", color = "steelblue"
+                                       , Yl ="Valores")
+  ,ncol=2)
+ggsave(filename = "volatilidades.pdf", plot = p)
+
+# Un poco de manipulacion adecuada para graficar.
+Dat <- data.frame(fecha = R.a.join$fecha,
+                portafolio1 = (X1.a-R.a.join$R.a)/sigma1.a,
+                portafolio2 = (X2.a-R.a.join$R.a)/sigma2.a
+                ) %>% pivot_longer(cols = !fecha, names_to = "Portafolios", values_to = "Valores")
+
+# Visualization del desempeño de los fondos de inversion o portafoleos con el indicador de la razon de Sharp.
+ggplot(data = Dat, mapping = aes(x=fecha, y = Valores)) + 
+  geom_line(aes(color = Portafolios, linetype = Portafolios)) + 
+  scale_color_manual(values = c("darkred", "steelblue"))+
+  theme_minimal()+
+  geom_hline(yintercept=0, linetype="dashed", color = "red")+
+  labs(title="Comparación del índice de Sharpe.")
+ggsave(filename = "IndiceDeSharpe.pdf")
+
+# Gráficas de la razon de Sharp
+ts.plot((X1.a-R.a.join$R.a)/sigma1.a,lwd=1)
+lines((X2.a-R.a.join$R.a)/sigma2.a,col='blue',lwd=1)
+abline(h=0)
+
+
+```
+
+
+Datos de acciones van desde 2001-07-04 hata 2009-03-31
+```{r}
+head(datos_con_occi)
+tail(datos_con_occi)
+tail()
+D <- datos_TIB %>% mutate(Fecha =  lubridate::dmy(Fecha), year  = year(Fecha), month = month(Fecha)
+                          , day = lubridate::day(D$Fecha))
+
+D <- datos_TIB %>% mutate(fecha =  lubridate::dmy(Fecha))
+str(D)
+D2 <- D %>% dplyr::filter(fecha <= ("2009-03-23") & fecha >= "2001-07-04") 
+
+d3 <- left_join(datos_con_occi[,1], D2, by = "fecha")
+as.Date("2009-03-24") > as.Date("2009-03-23")
+```
+
