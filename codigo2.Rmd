@@ -1,0 +1,546 @@
+---
+title: "Trabajo 1"
+author: "Oliver Rodriguez"
+date: "5/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+
+```{r}
+datos <- read.table("acciones.fiducias.2000.2009.dat", header = TRUE, stringsAsFactors=FALSE)
+datos_TIB <- read.table("TIB.dat", header = T, stringsAsFactors = F)
+```
+
+
+```{r}
+#Precios de acciones bancos bogot´a y bancolombia, y fiduciarias occidente y fiducolombia.
+# names(datos)
+datos_con_occi <- datos %>% select(bogota, bancol) %>% 
+  apply( 2, function(x) {diff(log(x),1,1)
+            }
+    ) %>% as.tibble() %>%
+  mutate(fiducol = (1+datos$fiducol[-1])^(1/360)-1, occi = (1+datos$occi[-1])^(1/360)-1, 
+         fecha = lubridate::dmy(datos$fechas[-1])) %>% 
+  relocate(fecha)
+
+datos_sin_occi <- datos_con_occi %>% select(-occi)
+```
+
+```{r}
+s <- cov(datos_con_occi[,-c(1)])
+library(tseries)
+
+# Portafolio para proporciones de inversion eficiente "portfolio.optim":
+# pm debe ser seleccionado como un valor por encima del el míimo de los promedios de valores de las acciones.
+Portafolio1 <- portfolio.optim(x = as.matrix(datos_con_occi[,-c(1)]), pm = 0.0009, covmat = s)
+
+s2 <- cov(datos_sin_occi[,-c(1)])
+Portafolio2 <- portfolio.optim(x = as.matrix(datos_sin_occi[,-c(1)]), pm = 0.001, covmat = s2)
+```
+
+```{r}
+# Rendimiento del portafoleo (Suma de los rendimientos ponderada por los pesos de optimizacion del portafoleo ):
+RendPortafolio1 <- as.matrix(datos_con_occi[,-1]) %*%  Portafolio1$pw
+RendPortafolio2 <- as.matrix(datos_sin_occi[,-1]) %*%  Portafolio2$pw
+```
+
+```{r}
+require(fGarch)
+mod1.1 <-  garchFit(~ arma(1,0)+garch(1,0),
+                    data = RendPortafolio1, trace = FALSE, 
+                    cond.dist = "std")
+
+sigma1 <-  volatility(mod1.1, type = "sigma")
+
+
+# con esto realizamos agregados para una suma en una ventana de n=24 valores(suma acumulada), de las volatilidades, rendimientos y los rendimientos de TIB que es el nivel de referencia.
+require(data.table)
+
+sigma1.a <- frollsum(x=sigma1, 
+                     n=24, 
+                     fill=NA, 
+                     algo="exact", 
+                     align="left", 
+                     na.rm=FALSE, 
+                     hasNA=NA, 
+                     adaptive=FALSE)
+
+
+X1.a = frollsum(x=RendPortafolio1, 
+                n=24, 
+                fill=NA, 
+                algo="exact", 
+                align="left", 
+                na.rm=FALSE, 
+                hasNA=NA, 
+                adaptive=FALSE)
+
+# Conviento la tasa TIB de efectiva a nual a efectiva diaria:
+datos_TIB %<>% mutate(TIB = (1+TIB)^(1/360)-1)
+
+R.a = frollsum(x=datos_TIB[,2], 
+               n=24, 
+               fill=NA, 
+               algo="exact", 
+               align="left", 
+               na.rm=FALSE, 
+               hasNA=NA, 
+               adaptive=FALSE)
+
+# Aquí realizo hago conincidir las fechas de TIB con las disponibles en los datos de acciones, con un left join.
+R.a.join <- datos_TIB %>% mutate(R.a = R.a, fecha =  lubridate::dmy(Fecha)) %>% select(fecha, R.a)#cambienombre y formato de Fecha
+R.a.join <- left_join(datos_con_occi[,1], R.a.join, by = "fecha") 
+
+mod2.1 <-  garchFit(~ arma(1,0)+garch(1,0),
+                    data = RendPortafolio2, trace = FALSE, cond.dist = "std")
+
+sigma2 <-  volatility(mod2.1, type = "sigma")
+
+
+sigma2.a = frollsum(x=sigma2, 
+                    n=24, 
+                    fill=NA, 
+                    algo="exact", 
+                    align="left", 
+                    na.rm=FALSE, 
+                    hasNA=NA, 
+                    adaptive=FALSE)
+
+
+X2.a = frollsum(x=RendPortafolio2, 
+                n=24, 
+                fill=NA, 
+                algo="exact", 
+                align="left", 
+                na.rm=FALSE, 
+                hasNA=NA, 
+                adaptive=FALSE)
+
+
+grafico_lineas <- function(Data, x='Sts', y='Sts', Title='NN', Yl = "", Xl="Fecha",  color = "darkred") {
+  Dat <- Data[,c(x, y)]
+  names(Dat) <- c("fecha", "X")
+  ggplot(data = Dat, mapping = aes(x = fecha, y = X))+
+  geom_line(color = color)+
+      ggtitle(paste0(Title))+
+      xlab(Xl) +
+      ylab(Yl)+
+    theme_minimal()
+}
+
+p <- gridExtra::grid.arrange(
+  grafico_lineas(Data = data.frame(sigma1, fecha = datos_con_occi$fecha)
+                                       ,x = "fecha", y ="sigma1",Title = "Volatilidad portafolio 1", Yl ="Valores"),
+  grafico_lineas(Data = data.frame(sigma2, fecha = datos_con_occi$fecha)
+                                       , x = "fecha", y ="sigma2",Title = "Volatilidad portafolio 2", color = "steelblue"
+                                       , Yl ="Valores")
+  ,ncol=2)
+# ggsave(filename = "volatilidades.pdf", plot = p)
+
+# Un poco de manipulacion adecuada para graficar.
+Dat <- data.frame(fecha = R.a.join$fecha,
+                portafolio1 = (X1.a-R.a.join$R.a)/sigma1.a,
+                portafolio2 = (X2.a-R.a.join$R.a)/sigma2.a
+                ) %>% na.omit()
+
+Dat_sharp <- Dat %>% pivot_longer(cols = !fecha, names_to = "Portafolios", values_to = "Valores")
+
+# Visualization del desempeño de los fondos de inversion o portafoleos con el indicador de la razon de Sharp.
+ggplot(data = Dat_sharp, mapping = aes(x=fecha, y = Valores)) +
+  geom_line(aes(color = Portafolios, linetype = Portafolios)) +
+  scale_color_manual(values = c("darkred", "steelblue"))+
+  theme_minimal()+
+  geom_hline(yintercept=0, linetype="dashed", color = "red")+
+  labs(title="Comparación del índice de Sharpe.")
+# ggsave(filename = "IndiceDeSharpe.pdf")
+```
+
+**NOTA: Hasta aqui, el código necesario del trabajo anterior. Ahora, continuamos con el trabajo 2:**
+
+
+1. (30/30) Retomando el ´ındice de la raz´on de Sharpe para los dos portafolios del
+Trabajo No1, con las definiciones de $Xn,  \ In  \ y \  \sigma_n$ en el enunciado,
+
+$ SRn = Xn − In / \sigma_n$
+
+suavize las series SRn de ambos portafolios utilizando 4 suavizadores de las secciones
+§4.3,pag. 85 y §4.4, pag. 91: filtro L1, SavitzkyGolay,
+Loess y HodrickPrescott.
+Reporte las gr´aficas que se obtienen y reconsidere la decisi ´on sobre cu´al portafolio
+es preferible con base en las gr´aficas suavizadas. Par´ametros tunning sugeridos:
+L1 : prop = 0.05
+S − G : p = 3, n = 151,m = 0
+Loess : span = 0.65
+H − P :  freq = 8600.
+
+Xn es el rendimiento, In es un ´ındice de referencia para rendimientos.
+```{r}
+grafico_lineas <- function(DATA, col_values =  c("darkred", "steelblue"), x_name = "", y_name = "", Title = "") {
+  ggplot(data = DATA, mapping = aes(x=fecha, y = Valores)) +
+  geom_line(aes(color = Portafolios, linetype = Portafolios)) +
+  scale_color_manual(values = col_values)+
+  theme_minimal()+
+  geom_hline(yintercept=0, linetype="dashed", color = "red")+
+  labs(title=Title, x = x_name, y = y_name)
+}
+```
+
+
+L1: prop 0.05
+```{r}
+library(l1tf)
+# Un poco de manipulacion adecuada para graficar.
+Dat_L1 <- Dat  %>% 
+  mutate(portafolio1_L1 = l1tf(portafolio1, prop = 0.05), 
+         portafolio2_L1 = l1tf(portafolio2, prop = 0.05)) %>% select(fecha, portafolio1_L1, portafolio2_L1) %>% 
+  pivot_longer(cols = !fecha, names_to = "Portafolios", values_to = "Valores")
+
+
+gridExtra::grid.arrange(
+  grafico_lineas(DATA = Dat_L1, Title = "Filtros L1."),
+grafico_lineas(rbind(Dat_sharp, Dat_L1), col_values = c("darkred",  "darkgreen","steelblue", "black"), Title = "Filtros L1 con sus índices de Sharpe."), nrow = 2
+) %>% ggsave(plot = ., filename = "FiltrosL1.pdf")
+```
+
+SavitzkyGolay : S − G : p = 3, n = 151,m = 0
+```{r}
+require(signal)
+Dat_savitzky <- Dat  %>% 
+  mutate(portafolio1_SG = sgolayfilt(portafolio1, p = 3, n = 151, m = 0 ), 
+         portafolio2_SG = sgolayfilt(portafolio2, p = 3, n = 151, m = 0)) %>% select(fecha, portafolio1_SG, portafolio2_SG) %>% 
+  pivot_longer(cols = !fecha, names_to = "Portafolios", values_to = "Valores")
+
+gridExtra::grid.arrange(
+grafico_lineas(Dat_savitzky, Title = "Filtros Savitzky."),
+grafico_lineas(rbind(Dat_sharp, Dat_savitzky), col_values = c("darkred",  "darkgreen","steelblue", "black"), 
+               Title = "Filtros Savitzky Golay con sus índices de Sharpe."), nrow = 2
+) %>% ggsave(plot = ., filename = "FiltrosSavitzkyGolay.pdf")
+```
+
+
+Loess : span = 0.65
+```{r}
+Dat_Loess <- Dat  %>% 
+  mutate(
+    portafolio1_loess = (loess(portafolio1 ~ seq(1, nrow(Dat)), control = loess.control(surface = "direct")))$fitted, 
+    portafolio2_loess = (loess(portafolio2 ~ seq(1, nrow(Dat)), control = loess.control(surface = "direct")))$fitted ) %>% 
+  select(fecha, portafolio1_loess, portafolio2_loess) %>% 
+  pivot_longer(cols = !fecha, names_to = "Portafolios", values_to = "Valores")
+
+gridExtra::grid.arrange(
+grafico_lineas(Dat_Loess, Title = "Filtros Loess."),
+grafico_lineas(rbind(Dat_sharp, Dat_Loess), col_values = c("darkred",  "darkgreen","steelblue", "black"), 
+               Title = "Filtros Loess con sus índices de Sharpe."), nrow = 2
+) %>% ggsave(plot = ., filename = "FiltrosLoess.pdf")
+```
+
+HodrickPrescott. freq = 8600.
+```{r}
+# NOTA: se demora un poco, por eso guarde el data frame y lo cargo:
+# require(mFilter)
+# Dat_Hod_Pres <- Dat  %>% 
+#   mutate(
+#     portafolio1_HP = (hpfilter(x = portafolio1, freq = 8600))$trend, 
+#     portafolio2_HP = (hpfilter(x = portafolio2, freq = 8600))$trend ) %>% 
+#   select(fecha, portafolio1_HP, portafolio2_HP) %>% 
+#   pivot_longer(cols = !fecha, names_to = "Portafolios", values_to = "Valores")
+
+# saveRDS(Dat_Hod_Pres, "Dat_Hod_Pres.rds")
+Dat_Hod_Pres <- readRDS(file = "Dat_Hod_Pres.rds")
+
+gridExtra::grid.arrange(
+grafico_lineas(Dat_Hod_Pres, Title = "Filtros Hodrick Prescott."),
+grafico_lineas(rbind(Dat_sharp, Dat_Hod_Pres), col_values = c("darkred",  "darkgreen","steelblue", "black"), 
+               Title = "Filtros Hodrick Prescott con sus índices de Sharpe."), nrow = 2
+) %>% ggsave(plot = ., filename = "FiltrosHodrickPrescott.pdf")
+```
+
+
+#2: 
+Suponga una empresa de servicios para la cual los saldos siguen el modelo del
+Ejemplo 6.5.3, pag. 170, ecuaci ´on (6.55),
+
+Un = (1+rn)Un-1 + Xn - Yn
+
+donde k es en d´ıas, correspondientes a un per´ıodo de n = 5 a˜nos asumiendo a˜nos
+de m = 360 d´ıas, para un total de nm = 1800 d´ıas. Cada r = 30 d´ıas se reciben Xk
+por ingresos y egresan Yk por pagos, en una empresa de servicios.
+La capitalizaci ´on se realiza en una cuenta que reconocen rendimientos seg´un el
+modelo del primer portafolio del trabajo No 1, indicados por Dn, de tal forma que
+la tasa efectiva diaria en el d´ıa n es exp(Dn) − 1 2 (−1, 1)
+
+a) (20/20) Simule una serie de longitud N = nm/r = 60, de Yn asumiendo un
+modelo GAR(1), ver §6.1.2, pag. 148, con los par´ametros $\beta= 0.7$ , $\nu = 1.1352$,
+$\alpha = 0.07$. Reporte una trayectoria, y los valores de E(Yn), sd(Yn).
+
+```{r}
+id = 1.02^(1/12)-1
+m=360;n=5;r=30; nm = n*m;
+k = seq(1,nm,1)
+ck = ifelse(k%%r == 0, 1, 0)
+N = nm/r
+
+beta = 0.7
+nu = 1.1352
+alfa = 0.07
+
+#-distribucion invariante: Gamma(nu,alfa(1-beta))
+(EYn = nu/(alfa*(1-beta)))
+(sigma.Yn = sqrt(nu/(alfa*(1-beta))^2))
+
+Yn = double(N)
+Yn[1] = EYn
+set.seed(12345)
+for(j in 2:N) {
+  Yn[j] = sum(rexp(rpois(1,Yn[j-1]* beta*alfa),alfa))+rgamma(1,nu,rate=alfa)
+}
+
+ggplot(data = data.frame(Valores = Yn, Tiempo = seq(1, length(Yn)), Simu = "Simulada"),
+       mapping = aes(x = Tiempo, y = Valores))+
+  geom_line(aes(color = Simu), show.legend = F)+
+  scale_color_manual(values = c("darkblue"))+
+  labs(title = "Trayectoria simulada para un GAR(1)", subtitle = "Con: E(Yn) =54.05714 , sd(Yn)=50.73608")+
+  theme_minimal() 
+
+ggsave(filename = "pagos_Yn.pdf")
+
+```
+
+
+b) (20/20) Simule una trayectoria de longitud N = 60 de Xn asumiendo un
+modelo GAR(1), con los par´ametros $\beta_2, \ \nu_2,  \ \alpha_2$ de tal forma que se cumpla
+(E(Xn) − E(Yn))/E(Yn) >= 0.3. Reporte una trayectoria, y los valores de
+E(Xn), Sd(Xn).
+```{r}
+betax = 0.01
+nux = 5
+alfax = 0.05
+(EXn = nux/(alfax*(1-betax)))
+(EXn-EYn)/EYn
+(sigma.Yn = sqrt(nux/(alfax*(1-betax))^2))
+
+Xn = double(N)
+Xn[1] = EXn
+set.seed(12345)
+for(j in 2:N){
+  Xn[j] = sum(rexp(rpois(1,Xn[j-1]*betax*alfax),alfax))+rgamma(1,nux,rate=alfax)
+}
+ggplot(data = data.frame(Valores = Xn, Tiempo = seq(1, length(Xn)), Simu = "Simulada"),
+       mapping = aes(x = Tiempo, y = Valores))+
+  geom_line(aes(color = Simu), show.legend = F)+
+  scale_color_manual(values = c("darkgreen"))+
+  labs(title = "Trayectoria simulada para un GAR(1)", subtitle = "Con: E(Xn) = 101.0101 , sd(Xn)=45.17309")+
+  theme_minimal()
+
+ggsave(filename = "ingresos_Xn.pdf")
+
+```
+
+
+c) (20/20) Simule Ns = 1500 muestras del valor presente V de los ingresos
+menos pagosmensuales, actualizados por inflaci ´on al id = 0.02 efectiva anual,
+durante el per´ıodo de 5 a˜nos,
+
+V = U0 +
+Xnm
+j=1
+(1 + id)b j−1
+m c(Xj − Yj) Qj
+k=1 exp(Dk)
+asumiendo una reserva inicial U0 = (1+)E(Xn), con  = 0.35, por ejemplo.
+El s´ımboloDk es un valor simulado con el modelo de los rendimientos diarios
+del primer portafolio del Trabajo No1
+
+y
+Qj
+k=1 exp(Dk)
+
+−1
+es el factor de descuento programado en el Trabajo 1 con
+la instrucci ´on en R /cumprod(exp(Dn)).Reporte la densidad estimada de
+V , con puntos representando la media y el percentil del 95%, que representa
+el Valor en Riego a ese nivel. Comente sobre el resultado.
+
+AR(1)+ARCH(1)
+```{r}
+
+#-----------simulacion tasa rendimiento del portafolio 
+#---------------------caso:AR(1)+ARCH(1).
+require(rugarch)
+
+#------------especificar el modelo
+mod.spec = ugarchspec(
+  variance.model = list(garchOrder=c(1,0)), 
+  mean.model = list(armaOrder=c(1,0)),
+  distribution.model = "std")
+
+#------------estimar el modelo
+mod1 = ugarchfit(spec=mod.spec, 
+                 data=RendPortafolio1,solver.control=list(trace = 1)) 
+# A = ugarchsim(mod1, n.sim=nm)
+# Dn = A@simulation$seriesSim
+
+Ns = 1500
+Vsv = double(Ns)
+(U0 = (1+0.35)*EXn)
+n0 = which(ck != 0)
+
+Xn = double(N)
+Yn = double(N)
+Un = matrix(0,nm,Ns) #--muchas trayectorias de la reserva
+Un[1,] = U0
+
+for(i in 1:Ns){
+  #-----genera ingresos
+  Xn[1] = nux/(alfax*(1-betax))
+  for(l in 2:N){
+  Xn[l] = sum(rexp(rpois(1,Xn[l-1]*betax*alfax),alfax))+rgamma(1,nux,rate=alfax)}
+  
+  #------genera costos
+  Yn[1] = nu/(alfa*(1-beta))
+  for(l in 2:N){
+  Yn[l] = sum(rexp(rpois(1,Yn[l-1]*beta*alfa),alfa))+rgamma(1,nu,rate=alfa)}
+  
+  #------balance mensual
+  ck[n0] = Xn-Yn
+  
+  #-----incremento inflacion (numerador para la suma de la ecn trabajo 2)
+  ck = ck*(1+id)^floor((k-1)/m)
+  
+  #-----genera rendimientos portafolio
+  # Dn = use instrucciones del trabajo No 1 aqui
+  A = ugarchsim(mod1, n.sim = nm)
+  Dn = A@simulation$seriesSim
+  
+  #--------calcula valor presente
+  Vsv[i] = U0 + sum(ck/cumprod(exp(Dn)))
+  for(j in 2:nm){
+  Un[j,i] = exp(Dn[j]) * Un[j-1,i] + ck[j]}
+}
+```
+
+
+```{r}
+df <- data.frame(vsv = (Vsv[Vsv <= 8000]))
+
+ggplot(df, aes(x = vsv)) + 
+  geom_histogram(aes(y = ..density..),
+                 colour = 1, fill = "white") +
+  geom_density(lwd = 1, colour = 4,
+               fill = 4, alpha = 0.25)+ 
+  theme_minimal()+
+  geom_point(aes(x=mean(Vsv[Vsv <= 8000]), y=0), colour="red")+
+  geom_point(aes(x=quantile(x = Vsv[Vsv <= 8000], probs = 0.95)[[1]], y=0), colour="red")+
+  labs(title = "Estimación de valor presente")+
+  theme_minimal()
+
+ggsave(filename = "VSV.pdf")
+
+
+sum(Vsv > 8000)/Ns
+sum(Vsv[Vsv <= 8000] <= 0)/length(Vsv[Vsv <= 8000])
+```
+
+```{r}
+library("reshape2")
+
+
+gfg_data <- Un[,1:50] %>% as.data.frame()
+gfg_data$x <- 1:nrow(gfg_data)
+data_long <- melt(gfg_data, id = "x")
+gfg_plot <- ggplot(data_long, aes(x = x, y = value, color = variable)) + 
+  geom_line() + theme_minimal()+ theme(legend.position="none")+
+  geom_hline(yintercept= 0 , linetype='dashed', color='red')+
+  labs(title = "Trayectorias simuladas de  las utilidades de una empresa", y = "Valores", x = "Tiempo")+
+  expand_limits( y=c(-10000, 10000))
+  
+gfg_plot %>%  ggsave(filename = "trayectorias.pdf")
+
+
+```
+
+
+```{r}
+ggplot(data = data.frame(fecha = 1:length(Xn), Valores = Xn-Yn),
+       aes(x = fecha, y = Valores)) + 
+  geom_line(color = "darkred") + theme_minimal()+
+  geom_hline(yintercept= 0 , linetype='dashed')+
+  labs(title = "Difrencia entre Ingresos y costos", subtitle = "Xn-Yn",
+        y = "Diferencias", x = "Meses")
+ggsave(filename = "Diferencias.pdf")
+```
+
+
+```{r}
+g1 <- ggplot(data = data.frame(fecha = 1:360, Valores = exp(Dn[1:360])-1),
+       aes(x = fecha, y = Valores)) + 
+  geom_line(color = "darkblue") + theme_minimal()+
+  geom_hline(yintercept= 0 , linetype='dashed')+
+  labs(title = "Simulación de rendimientos modelo AR(1)+ARCH(1))", y = "Valores", x = "Observaciones")
+
+g2 <- ggplot(data.frame(Dn = exp(Dn)-1), aes(x = Dn)) + 
+  geom_histogram(aes(y = ..density..),
+                 colour = 1, fill = "white") +
+  geom_density(lwd = 0.8, colour = 3,
+               fill = 3, alpha = 0.25)+ 
+  theme_minimal()+
+  geom_point(aes(x=mean(Dn), y=0), colour="red")+
+  labs(title = "Histograma y densidad de simulación modelo AR(1)+ARCH(1))", 
+       subtitle = " Con media de 0.0005642", x = 'rendimientos')+
+  theme_minimal()
+
+gridExtra::grid.arrange(g1,g2, nrow = 2) %>% ggsave(filename = "rendimientos_sim.pdf")
+
+```
+
+```{r}
+par(mfrow=c(2,2))
+
+plot(density(Vsv[Vsv <= 8000]),col='darkgray')
+points(mean(Vsv[Vsv <= 8000]),0,pch=20,col='red')
+points(quantile(x = Vsv[Vsv <= 8000], probs = 0.95)[[1]], 0,pch=20,col='red')
+sum(Vsv > 8000)/Ns
+
+
+
+
+t = seq(1,nm)
+plot(t,Un[,1],type='l',ylim=c(-10000,10000))
+grid()
+for(k in 1:1500){
+lines(t,Un[,k],col='gray')}
+abline(h=0)
+
+sum((Xn-Yn)<=0)/length(Xn)
+ts.plot(Xn-Yn)
+abline(h=0)
+
+ts.plot(exp(Dn[1:360])-1)
+plot(density(exp(Dn)-1))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
