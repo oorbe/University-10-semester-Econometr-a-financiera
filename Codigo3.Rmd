@@ -1,0 +1,314 @@
+---
+title: "Untitled"
+author: "Oliver Rodriguez"
+date: "19/1/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+1 ejemplos de correlacion cruzada:
+C:\Users\Oliver\Documents\U\10\Econometria financiera\Trabajo 3\Ejemplos con R-20220119
+
+SS
+modelos 
+C:\Users\Oliver\Documents\U\10\Econometria financiera\Trabajo 3\Ejemplos con R-20220119
+Para DLSME y ARDL
+
+punto 3
+https://statologos.jaol.net/granger-causality-test-in-r/#:~:text=La%20prueba%20de%20causalidad%20de%20Granger%20se%20utiliza,causa%20la%20serie%20de%20tiempo%20de%20Granger%20y
+
+https://es.wikipedia.org/wiki/Causalidad_de_Granger
+
+
+https://gaz.wiki/wiki/es/Granger_causality
+
+https://es.wikipedia.org/wiki/Causalidad_(estad%C3%ADstica)
+
+```{r}
+library(tidyverse)
+Data <- read.table("datos.transferencia1.dat", header = T)
+# str(Data)
+colSums(is.na(Data))
+cor(Data)
+```
+
+```{r}
+attach(Data)
+
+grafico_lineas <- function(Data, x='Sts', y='Sts', Title='NN', Yl = "", Xl="Fecha",  color = "darkred", size=1.5, alpha =1) {
+  Dat <- Data[,c(x, y)]
+  names(Dat) <- c("fecha", "X")
+  ggplot(data = Dat, mapping = aes(x = fecha, y = X))+
+  geom_line(color = color, size=size, alpha=alpha)+
+      ggtitle(paste0(Title))+
+      xlab(Xl) +
+      ylab(Yl)+
+    theme_minimal()
+}
+
+
+
+
+#gridExtra::grid.arrange
+
+Data %>% mutate(n = 1:nrow(Data)) %>% 
+  grafico_lineas(Data = ., x = "n", y = "Y", Title = "Precio de bolsa en el MEN de 1 kWh en COP", Yl = "COP", size = 1) +
+  geom_hline(yintercept=0, linetype='dashed', alpha = 0.5, size = 1)
+ggsave("Serie_nivel_Y.pdf")
+
+Data %>% mutate(n = 1:nrow(Data)) %>% 
+grafico_lineas(Data = ., x = "n", y = "X1", Title = "Costo de producción por kWh energía termoeléctica", Yl = "Costo", size = 1) +
+  geom_hline(yintercept=0, linetype='dashed', alpha = 0.5, size = 1)
+ggsave("Serie_nivel_X1.pdf")
+  
+Data %>% mutate(n = 1:nrow(Data)) %>% 
+  grafico_lineas(Data = ., x = "n", y = "X2", Title = "Costo de producción por kWh energía  hidráulica", Yl = "Costo", size = 1) +
+  geom_hline(yintercept=0, linetype='dashed', alpha = 0.5, size = 1)
+ggsave("Serie_nivel_X2.pdf")
+
+
+
+
+ts.plot(Y)
+grid
+ts.plot(diff(Y))
+ts.plot(X1)
+ts.plot(diff(X1))
+ts.plot(X2)
+ts.plot(diff(X2))
+```
+
+
+```{r}
+library(forecast)
+ndiffs(Y)
+ndiffs(X1)
+ndiffs(X2)
+
+
+Dd = data.frame(dY=diff(Data$Y), dX1=diff(Data$X1), dX2=diff(Data$X2))
+
+Dd %>% mutate(n = 1:nrow(Dd)) %>% 
+  grafico_lineas(Data = ., x = "n", y = "dY", Title = "Serie diferenciada del precio de bolsa en el MEN de 1 kWh en COP", Yl = "COP", size = 0.7 ) +
+  geom_hline(yintercept=0, linetype='dashed', alpha = 0.5, size = 1)
+ggsave("dif_Serie_nivel_Y.pdf")
+
+Dd %>% mutate(n = 1:nrow(Dd)) %>% 
+grafico_lineas(Data = ., x = "n", y = "dX1", Title = "Serie diferenciada del costo de producción por kWh energía termoeléctica", Yl = "Costo", size = 0.7) +
+  geom_hline(yintercept=0, linetype='dashed', alpha = 0.5, size = 1)
+ggsave("dif_Serie_nivel_X1.pdf")
+  
+Dd %>% mutate(n = 1:nrow(Dd)) %>% 
+  grafico_lineas(Data = ., x = "n", y = "dX2", Title = "Serie diferenciada del costo de producción por kWh energía  hidráulica", Yl = "Costo", size = 0.7) +
+    geom_hline(yintercept=0, linetype='dashed', alpha = 0.5, size = 1)
+
+ggsave("dif_Serie_nivel_X2.pdf")
+```
+
+
+```{r}
+ccf(diff(Y), diff(X1), main="")
+abline(v=0,col='red',lwd=2)
+ccf(diff(Y), diff(X2), type = c("correlation"), main="")
+abline(v=0,col='red',lwd=2)
+```
+
+
+```{r}
+acf(Dd$dY)
+pacf(Dd$dY)
+acf(Dd$dX1)
+pacf(Dd$dX1)
+acf(Dd$dX2)
+pacf(Dd$dX2)
+```
+
+# 2
+```{r}
+library(ardl)
+
+auto.ardl(dY ~ dX1 + dX2, data=Dd, ymax=4, xmax=c(4,4), ic="aic" )
+
+m1 <- ardl(dY ~ dX1 + dX2, data=Dd,
+         ylag=4, xlag=c(0, 3) 
+         )
+
+summary(m1)
+
+m2 <- ardl(dY ~ dX1 + dX2, data=Dd,
+         ylag=4, xlag=c(0, 2) )
+
+summary(m2)
+m3 <- ardl(dY ~ dX1 + dX2, data=Dd,
+         ylag=4, xlag=c(0, 1) )
+
+summary(m3)
+
+m4 <- ardl(dY ~ dX1 + dX2, data=Dd,
+         ylag=4, xlag=c(0, 0) )
+
+summary(m4)
+
+m5 <- ardl(dY ~ dX1 , data=Dd,
+         ylag=4, xlag=c(0) )
+
+summary(m5)
+
+
+```
+
+Debea haber una explicacion de los parametros estimados del modelo seleccionado
+```{r}
+library(lmtest)
+coeftest(m1)
+coeftest(m5)
+
+plot(m1)
+
+box_mod5 <- numeric(7)
+for (i in 1:7){
+  l <- seq(5, 35, 5)
+  x <- Box.test(m1$residuals, lag = l[i] , type = "Ljung-Box")
+  box_mod5[i] <- x$p.value
+}
+box_mod5
+xtable::xtable(data.frame(lag = seq(5, 35, 5), mod = box_mod5))
+```
+
+
+```{r}
+# bounds.test( m1 )
+
+
+Zn = m5$residuals
+
+require(TSA)
+
+par(mfrow=c(2,2))
+ts.plot(Zn)
+plot(Zn, m5$fitted.values, main = "", xlab = "Residuales", ylab = "Valores ajustados")
+# plot(density(Zn),xlab='x',main= '')
+acf(Zn,60,main="")
+#pacf(Zn,60,main="")
+qqnorm(Zn)
+qqline(Zn,col=2)
+
+Zn = m4$residuals
+
+par(mfrow=c(3,2))
+ts.plot(Zn)
+plot(density(Zn),xlab='x',main= '')
+acf(Zn,60,main="")
+pacf(Zn,60,main="")
+qqnorm(Zn)
+qqline(Zn,col=2)
+
+```
+
+
+```{r}
+Yhat = c(Y[1:5],m5$fitted.values)
+
+length(Yhat)
+length(Y)
+
+t = seq(1,length(Yhat))
+plot(t,cumsum(Y),type='l', col='black', lwd = 6)
+lines(t,cumsum(Yhat),col='red', lwd =2)
+
+Yhat = c(Y[1:4],m4$fitted.values)
+
+t = seq(1,length(Yhat))
+plot(t,cumsum(Y),type='l', col='black', lwd = 6)
+lines(t,cumsum(Yhat),col='red', lwd =2)
+```
+
+
+
+```{r}
+library(BiocGenerics)
+library(Rgraphviz)
+library(graph)
+library(dlsem)
+
+global <- list(
+adapt=TRUE,
+max.gestation=5,
+max.lead=15,
+min.width=3,
+sign="+")
+
+
+# Dd = data.frame(dY=diff(Data$Y), dX1=diff(Data$X1), dX2=diff(Data$X2))
+D.code_4 <- list(dY~ld(dX1,a=1, b=4,nlag=2) + ld(dX2,a=1, b=4,nlag=2))
+
+D.mod_4 <- dlsem(D.code_4, group=NULL, time=NULL, data=Dd,
+                 global.control=global,log=FALSE)
+
+
+B = summary(D.mod_4)
+rownames(B$endogenous$dY) <- c("dX1", "dX2")
+rbind(B$intercepts$dY,B$endogenous$dY)
+
+
+Ynhat = D.mod_4$estimate$dY$fitted.values
+(length(Y))
+(length(Ynhat))
+
+
+t = seq(1,length(Y))
+plot(t[-seq(1,16)],cumsum(Y)[-seq(1,16)],type='l')
+lines(t[-seq(1,16)],cumsum(Ynhat),col='red')
+
+
+box_mod5 <- double(7)
+for (i in 1:7){
+  l <- seq(5, 35, 5)
+  x <- Box.test(D.mod_4$estimate$dY$residuals, lag = l[i] , type = "Ljung-Box")
+  box_mod5[i] <- x$p.value
+}
+box_mod5
+xtable::xtable(data.frame(lag = seq(5, 35, 5), mod = box_mod5))
+
+```
+
+
+
+```{r}
+par(mfrow=c(2,2))
+ts.plot(Zn)
+plot(Zn, m5$fitted.values, main = "", xlab = "Residuales", ylab = "Valores ajustados")
+# plot(density(Zn),xlab='x',main= '')
+acf(Zn,60,main="")
+#pacf(Zn,60,main="")
+qqnorm(Zn)
+qqline(Zn,col=2)
+```
+
+3
+```{r}
+nlag=1:20
+vec1 <- numeric(length = length(nlag))
+for (i in nlag) {
+  z <- grangertest(dY ~ dX1 , data = Dd, order = i)
+  vec1[i] <- z$`Pr(>F)`[2]
+}
+vec1
+
+
+vec2 <- numeric(length = length(nlag))
+for (i in nlag) {
+  z <- grangertest(dY ~ dX2 , data = Dd, order = i)
+  vec2[i] <- z$`Pr(>F)`[2]
+}
+vec2
+
+xtable::xtable(data.frame(X1 = vec1, X2 = vec2))
+```
+
+
+
